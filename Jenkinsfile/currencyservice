@@ -151,28 +151,51 @@ pipeline {
     // --- Final Notifications ---
     post {
         always {
-            dir('src/currencyservice') {
-                script {
-                    def buildStatus = currentBuild.currentResult
-                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Github User'
+            // Ensure a node/workspace is allocated before running archive/email steps
+            script {
+                node {
+                    // run inside workspace; prefer a short guarded block to avoid long waits if no agents available
+                    dir('src/currencyservice') {
+                        // Archive any artifacts if present (silently continue if missing)
+                        try {
+                            archiveArtifacts artifacts: 'trivy-fs-report.txt', allowEmptyArchive: true
+                        } catch (err) {
+                            echo "No trivy-fs-report.txt to archive: ${err}"
+                        }
+                        try {
+                            archiveArtifacts artifacts: 'trivy-image-currency.json', allowEmptyArchive: true
+                            archiveArtifacts artifacts: 'trivy-image-currency.txt', allowEmptyArchive: true
+                        } catch (err) {
+                            echo "No trivy image artifacts to archive: ${err}"
+                        }
+                        try {
+                            archiveArtifacts artifacts: 'dependency-check-report.xml', allowEmptyArchive: true
+                        } catch (err) {
+                            echo "No dependency-check-report.xml to archive: ${err}"
+                        }
 
-                    emailext (
-                        subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                        body: """
-                            <p><b>Currencyservice DevSecOps pipeline</b> status summary:</p>
-                            <ul>
-                              <li><b>Project:</b> ${env.JOB_NAME}</li>
-                              <li><b>Build Number:</b> ${env.BUILD_NUMBER}</li>
-                              <li><b>Status:</b> ${buildStatus}</li>
-                              <li><b>Started by:</b> ${buildUser}</li>
-                              <li><b>Build URL:</b> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
-                            </ul>
-                        """,
-                        to: "${env.EMAIL}",
-                        from: "${env.EMAIL}",
-                        mimeType: 'text/html',
-                        attachmentsPattern: 'trivy-fs-report.txt,trivy-image-currency.json,trivy-image-currency.txt,dependency-check-report.xml'
-                    )
+                        // prepare email metadata and send
+                        def buildStatus = currentBuild.currentResult
+                        def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Github User'
+
+                        emailext (
+                            subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                            body: """
+                                <p><b>Currencyservice DevSecOps pipeline</b> status summary:</p>
+                                <ul>
+                                  <li><b>Project:</b> ${env.JOB_NAME}</li>
+                                  <li><b>Build Number:</b> ${env.BUILD_NUMBER}</li>
+                                  <li><b>Status:</b> ${buildStatus}</li>
+                                  <li><b>Started by:</b> ${buildUser}</li>
+                                  <li><b>Build URL:</b> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
+                                </ul>
+                            """,
+                            to: "${env.EMAIL}",
+                            from: "${env.EMAIL}",
+                            mimeType: 'text/html',
+                            attachmentsPattern: 'trivy-fs-report.txt,trivy-image-currency.json,trivy-image-currency.txt,dependency-check-report.xml'
+                        )
+                    } 
                 }
             }
         }
