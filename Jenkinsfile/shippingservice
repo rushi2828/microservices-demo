@@ -1,0 +1,163 @@
+pipeline {
+    agent any
+
+    tools { go 'go1.25' }
+
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        DOCKER_NAME = 'rushi2323/shippingservice'
+        IMAGE_NAME = 'shippingservice'
+        GO_BIN_PATH = '$(go env GOPATH)/bin'
+        EMAIL = 'rushimane2606@gmail.com'
+    }
+
+    stages {
+        stage("Clean Workspace") { steps { cleanWs() } }
+
+        stage("Git Checkout") {
+            steps { git branch: 'main', url: 'https://github.com/rushi2828/microservices-demo.git' }
+        }
+
+        stage('Go Security Scan (gosec)') {
+            steps {
+                dir('src/shippingservice') {
+                    script {
+                        sh '''
+                        export PATH="$PATH:$(go env GOPATH)/bin"
+                        if ! command -v gosec &> /dev/null; then
+                            go install github.com/securego/gosec/v2/cmd/gosec@latest
+                        fi
+                        gosec -fmt=sonarqube -out gosec-report.json -no-fail ./...
+                        '''
+                    }
+                }
+            }
+            post { always { archiveArtifacts 'src/shippingservice/gosec-report.json' } }
+        }
+
+        stage("SonarQube Analysis") {
+            steps {
+                dir('src/shippingservice') {
+                    withSonarQubeEnv('sonar-server') {
+                        sh ''' $SCANNER_HOME/bin/sonar-scanner \
+                            -Dsonar.projectName=shippingservice \
+                            -Dsonar.projectKey=shippingservice \
+                            -Dsonar.sources=. \
+                            -Dsonar.language=go \
+                            -Dsonar.go.gosec.reportPaths=gosec-report.json '''
+                    }
+                }
+            }
+        }
+
+        stage('Go Build') { steps { dir('src/shippingservice') { sh 'CGO_ENABLED=0 go build -o app .' } } }
+
+        stage('Go Unit Tests') { steps { dir('src/shippingservice') { sh 'go test -v -coverprofile=coverage.out ./...' } } }
+
+        stage('Go Dependency Check (govulncheck)') {
+            steps {
+                dir('src/shippingservice') {
+                    script {
+                        sh '''
+                        export PATH="$PATH:$(go env GOPATH)/bin"
+                        if ! command -v govulncheck &> /dev/null; then
+                            go install golang.org/x/vuln/cmd/govulncheck@latest
+                        fi
+                        export PATH="$PATH:$(go env GOPATH)/bin"
+                        govulncheck ./... || true
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage("Trivy File Scan") {
+            steps {
+                dir('src/shippingservice') {
+                    sh '''
+                    trivy fs . \
+                        --severity CRITICAL,HIGH \
+                        --exit-code 1 \
+                        --scanners vuln,misconfig,secret \
+                        > trivy-fs-report.txt || true
+                    '''
+                }
+            }
+            post { always { archiveArtifacts 'src/shippingservice/trivy-fs-report.txt' } }
+        }
+
+        stage("Build Docker Image") {
+            steps {
+                dir('src/shippingservice') {
+                    script {
+                        env.IMAGE_TAG = "${DOCKER_NAME}:${BUILD_NUMBER}"
+                        sh "docker rmi -f ${IMAGE_NAME} ${env.IMAGE_TAG} || true"
+                        sh "docker build -t ${IMAGE_NAME} ."
+                        sh "docker tag ${IMAGE_NAME} ${env.IMAGE_TAG}"
+                    }
+                }
+            }
+        }
+
+        stage("Tag & Push to DockerHub") {
+            steps {
+                dir('src/shippingservice') {
+                    withCredentials([string(credentialsId: 'docker-cred', variable: 'dockerpwd')]) {
+                        sh '''
+                        docker login -u rushi2323 -p ${dockerpwd}
+                        docker tag ${IMAGE_NAME} ${env.IMAGE_TAG}
+                        docker push ${env.IMAGE_TAG}
+                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
+                        docker push ${DOCKER_NAME}:latest
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage("Trivy Scan Image") {
+            steps {
+                dir('src/shippingservice') {
+                    script {
+                        sh """
+                        trivy image -f json -o trivy-image-shippingservice.json ${env.IMAGE_TAG}
+                        trivy image -f table -o trivy-image-shippingservice.txt ${env.IMAGE_TAG}
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts 'src/shippingservice/trivy-image-shippingservice.json'
+                    archiveArtifacts 'src/shippingservice/trivy-image-shippingservice.txt'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            dir('src/shippingservice') {
+                script {
+                    def buildStatus = currentBuild.currentResult
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Github User'
+                    emailext (
+                        subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                            <p>shippingservice DevSecops pipeline status.</p>
+                            <p>Project: ${env.JOB_NAME}</p>
+                            <p>Build Number: ${env.BUILD_NUMBER}</p>
+                            <p>Build Status: ${buildStatus}</p>
+                            <p>Started by: ${buildUser}</p>
+                            <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                        """,
+                        to: "${env.EMAIL}",
+                        from: "${env.EMAIL}",
+                        mimeType: 'text/html',
+                        attachmentsPattern: 'trivy-fs-report.txt,trivy-image-shippingservice.json,trivy-image-shippingservice.txt,gosec-report.json'
+                    )
+                }
+            }
+        }
+    }
+}

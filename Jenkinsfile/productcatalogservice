@@ -1,0 +1,176 @@
+pipeline {
+    agent any
+
+    tools { go 'go1.25' }
+
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        DOCKER_NAME = 'rushi2323/productcatalogservice'
+        IMAGE_NAME = 'productcatalogservice'
+        GO_BIN_PATH = '$(go env GOPATH)/bin'
+        EMAIL = 'rushimane2606@gmail.com'
+    }
+
+    stages {
+        stage("Clean Workspace") { steps { cleanWs() } }
+
+        stage("Git Checkout") {
+            steps { git branch: 'main', url: 'https://github.com/rushi2828/microservices-demo.git' }
+        }
+
+        stage('Go Security Scan (gosec)') {
+            steps {
+                dir('src/productcatalogservice') {
+                    script {
+                        sh '''
+                        export PATH="$PATH:$(go env GOPATH)/bin"
+                        if ! command -v gosec &> /dev/null; then
+                            echo "Installing gosec..."
+                            go install github.com/securego/gosec/v2/cmd/gosec@latest
+                        fi
+                        gosec -fmt=sonarqube -out gosec-report.json -no-fail ./...
+                        '''
+                    }
+                }
+            }
+            post { always { archiveArtifacts 'src/productcatalogservice/gosec-report.json' } }
+        }
+
+        stage("SonarQube Analysis") {
+            steps {
+                dir('src/productcatalogservice') {
+                    withSonarQubeEnv('sonar-server') {
+                        sh ''' $SCANNER_HOME/bin/sonar-scanner \
+                            -Dsonar.projectName=productcatalogservice \
+                            -Dsonar.projectKey=productcatalogservice \
+                            -Dsonar.sources=. \
+                            -Dsonar.language=go \
+                            -Dsonar.go.gosec.reportPaths=gosec-report.json '''
+                    }
+                }
+            }
+        }
+
+        stage('Go Build') {
+            steps {
+                dir('src/productcatalogservice') {
+                    sh 'CGO_ENABLED=0 go build -o app .'
+                }
+            }
+        }
+
+        stage('Go Unit Tests') {
+            steps {
+                dir('src/productcatalogservice') {
+                    sh 'go test -v -coverprofile=coverage.out ./...'
+                }
+            }
+        }
+
+        stage('Go Dependency Check (govulncheck)') {
+            steps {
+                dir('src/productcatalogservice') {
+                    script {
+                        sh '''
+                        export PATH="$PATH:$(go env GOPATH)/bin"
+                        if ! command -v govulncheck &> /dev/null; then
+                            go install golang.org/x/vuln/cmd/govulncheck@latest
+                        fi
+                        export PATH="$PATH:$(go env GOPATH)/bin"
+                        govulncheck ./... || true
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage("Trivy File Scan") {
+            steps {
+                dir('src/productcatalogservice') {
+                    sh '''
+                    trivy fs . \
+                        --severity CRITICAL,HIGH \
+                        --exit-code 1 \
+                        --scanners vuln,misconfig,secret \
+                        > trivy-fs-report.txt || true
+                    '''
+                }
+            }
+            post { always { archiveArtifacts 'src/productcatalogservice/trivy-fs-report.txt' } }
+        }
+
+        stage("Build Docker Image") {
+            steps {
+                dir('src/productcatalogservice') {
+                    script {
+                        env.IMAGE_TAG = "${DOCKER_NAME}:${BUILD_NUMBER}"
+                        sh "docker rmi -f ${IMAGE_NAME} ${env.IMAGE_TAG} || true"
+                        sh "docker build -t ${IMAGE_NAME} ."
+                        sh "docker tag ${IMAGE_NAME} ${env.IMAGE_TAG}"
+                    }
+                }
+            }
+        }
+
+        stage("Tag & Push to DockerHub") {
+            steps {
+                dir('src/productcatalogservice') {
+                    withCredentials([string(credentialsId: 'docker-cred', variable: 'dockerpwd')]) {
+                        sh '''
+                        docker login -u rushi2323 -p ${dockerpwd}
+                        docker tag ${IMAGE_NAME} ${env.IMAGE_TAG}
+                        docker push ${env.IMAGE_TAG}
+                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
+                        docker push ${DOCKER_NAME}:latest
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage("Trivy Scan Image") {
+            steps {
+                dir('src/productcatalogservice') {
+                    script {
+                        sh """
+                        trivy image -f json -o trivy-image-productcatalogservice.json ${env.IMAGE_TAG}
+                        trivy image -f table -o trivy-image-productcatalogservice.txt ${env.IMAGE_TAG}
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts 'src/productcatalogservice/trivy-image-productcatalogservice.json'
+                    archiveArtifacts 'src/productcatalogservice/trivy-image-productcatalogservice.txt'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            dir('src/productcatalogservice') {
+                script {
+                    def buildStatus = currentBuild.currentResult
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Github User'
+                    emailext (
+                        subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                            <p>productcatalogservice DevSecops pipeline status.</p>
+                            <p>Project: ${env.JOB_NAME}</p>
+                            <p>Build Number: ${env.BUILD_NUMBER}</p>
+                            <p>Build Status: ${buildStatus}</p>
+                            <p>Started by: ${buildUser}</p>
+                            <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                        """,
+                        to: "${env.EMAIL}",
+                        from: "${env.EMAIL}",
+                        mimeType: 'text/html',
+                        attachmentsPattern: 'trivy-fs-report.txt,trivy-image-productcatalogservice.json,trivy-image-productcatalogservice.txt,gosec-report.json'
+                    )
+                }
+            }
+        }
+    }
+}
