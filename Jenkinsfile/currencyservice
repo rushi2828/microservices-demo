@@ -8,8 +8,9 @@ pipeline {
     
     environment {
         SCANNER_HOME = tool 'sonar-scanner'
-        DOCKER_NAME  = 'harishnshetty/currencyservice'
+        DOCKER_NAME  = 'rushi2323/currencyservice'
         IMAGE_NAME   = 'currencyservice'
+        EMAIL        = 'rushimane2606@gmail.com'
     }
 
     stages {
@@ -60,26 +61,26 @@ pipeline {
             }
         }
 
-          stage("OWASP FS Scan") {
+        // --- OWASP Dependency Check ---
+        stage("OWASP FS Scan") {
             steps {
                 dir('src/currencyservice') {
-                dependencyCheck additionalArguments: '''
-                    --scan ./ 
-                    --disableYarnAudit 
-                    --disableNodeAudit 
-                
-                   ''',
-                odcInstallation: 'dp-check'
+                    dependencyCheck additionalArguments: '''
+                        --scan ./ 
+                        --disableYarnAudit 
+                        --disableNodeAudit 
+                    ''',
+                    odcInstallation: 'dp-check'
 
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                }
             }
-        }
-                    post {
+            post {
                 always {
                     archiveArtifacts 'src/currencyservice/dependency-check-report.xml'
                 }
             }
-          }
+        }
 
         // --- Trivy FS Scan ---
         stage("Trivy File Scan") {
@@ -116,10 +117,13 @@ pipeline {
             steps {
                 dir('src/currencyservice') {
                     withCredentials([string(credentialsId: 'docker-cred', variable: 'dockerpwd')]) {
-                        sh "docker login -u harishnshetty -p ${dockerpwd}"
-                        sh "docker push ${IMAGE_TAG}"
-                        sh "docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest"
-                        sh "docker push ${DOCKER_NAME}:latest"
+                        sh '''
+                        echo "${dockerpwd}" | docker login -u rushi2323 --password-stdin
+                        docker push ${IMAGE_TAG}
+                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
+                        docker push ${DOCKER_NAME}:latest
+                        docker logout
+                        '''
                     }
                 }
             }
@@ -137,7 +141,8 @@ pipeline {
             }
             post {
                 always {
-                    archiveArtifacts 'src/currencyservice/trivy-image-currency.*'
+                    archiveArtifacts 'src/currencyservice/trivy-image-currency.json'
+                    archiveArtifacts 'src/currencyservice/trivy-image-currency.txt'
                 }
             }
         }
@@ -149,21 +154,22 @@ pipeline {
             dir('src/currencyservice') {
                 script {
                     def buildStatus = currentBuild.currentResult
-                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Github User'
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Github User'
 
                     emailext (
                         subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                         body: """
-                            <p>Currencyservice Google-Shop DevSecOps pipeline status.</p>
-                            <p>Youtube Link :- https://www.youtube.com/@devopsHarishNShetty </p>
-                            <p>Project: ${env.JOB_NAME}</p>
-                            <p>Build Number: ${env.BUILD_NUMBER}</p>
-                            <p>Build Status: ${buildStatus}</p>
-                            <p>Started by: ${buildUser}</p>
-                            <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                            <p><b>Currencyservice DevSecOps pipeline</b> status summary:</p>
+                            <ul>
+                              <li><b>Project:</b> ${env.JOB_NAME}</li>
+                              <li><b>Build Number:</b> ${env.BUILD_NUMBER}</li>
+                              <li><b>Status:</b> ${buildStatus}</li>
+                              <li><b>Started by:</b> ${buildUser}</li>
+                              <li><b>Build URL:</b> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
+                            </ul>
                         """,
-                        to: 'harishn662@gmail.com',
-                        from: 'harishn662@gmail.com',
+                        to: "${env.EMAIL}",
+                        from: "${env.EMAIL}",
                         mimeType: 'text/html',
                         attachmentsPattern: 'trivy-fs-report.txt,trivy-image-currency.json,trivy-image-currency.txt,dependency-check-report.xml'
                     )
