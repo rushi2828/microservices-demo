@@ -103,13 +103,11 @@ pipeline {
             steps {
                 dir('src/shippingservice') {
                     withCredentials([string(credentialsId: 'docker-cred', variable: 'dockerpwd')]) {
-                        sh '''
-                        docker login -u rushi2323 -p ${dockerpwd}
-                        docker tag ${IMAGE_NAME} ${env.IMAGE_TAG}
-                        docker push ${env.IMAGE_TAG}
-                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
-                        docker push ${DOCKER_NAME}:latest
-                        '''
+                        sh "docker login -u rushi2323 -p ${dockerpwd}"
+                        sh "docker tag ${IMAGE_NAME} ${env.IMAGE_TAG}"
+                        sh "docker push ${env.IMAGE_TAG}"
+                        sh "docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest"
+                        sh "docker push ${DOCKER_NAME}:latest"
                     }
                 }
             }

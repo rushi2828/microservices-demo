@@ -82,12 +82,10 @@ pipeline {
             steps {
                 dir('src/paymentservice') {
                     withCredentials([string(credentialsId: 'docker-cred', variable: 'dockerpwd')]) {
-                        sh '''
-                        docker login -u rushi2323 -p ${dockerpwd}
-                        docker push ${IMAGE_TAG}
-                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
-                        docker push ${DOCKER_NAME}:latest
-                        '''
+                        sh "docker login -u rushi2323 -p ${dockerpwd}"
+                        sh "docker push ${IMAGE_TAG}"
+                        sh "docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest"
+                        sh "docker push ${DOCKER_NAME}:latest"
                     }
                 }
             }
